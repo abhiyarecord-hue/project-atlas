@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 5,
+ "total_cost_usd": 0.058868800000000006,
+ "usage": {
+  "input_tokens": 8,
+  "cache_creation_input_tokens": 6975,
+  "cache_read_input_tokens": 142928,
+  "output_tokens": 1666,
+  "output_tokens_details": {
+   "thinking_tokens": 114
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 6975,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 8,
+   "outputTokens": 1666,
+   "cacheReadInputTokens": 142928,
+   "cacheCreationInputTokens": 6975,
+   "webSearchRequests": 0,
+   "costUSD": 0.058868800000000006,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 114,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 6975,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 19872,
+ "result": "**Definition**\n- `fastapi/dependencies/utils.py:300` is `get_dependant(*, path, call, name=None, own_oauth_scopes=None, parent_oauth_scopes=None, use_cache=True, scope=None) -> Dependant`. All parameters are keyword-only.\n\n**Call sites in the `fastapi/` source**\n\n| Location | Enclosing function | Arguments passed |\n|---|---|---|\n| `fastapi/dependencies/utils.py:151` | `get_parameterless_sub_dependant` (defined at line 144) | Not checked |\n| `fastapi/dependencies/utils.py:350` | `get_dependant` itself (recursive call for sub-dependencies) | Not checked |\n| `fastapi/dependencies/utils.py:689` | `solve_dependencies` (async, defined at line 643) | Not checked |\n| `fastapi/routing.py:914` | `_build_dependant_with_parameterless_dependencies` (defined at line 908) | `path=path, call=call, scope=\"function\"` |\n\n`fastapi/routing.py:64` imports `get_dependant`. It is not a call, but it would also need updating if the function were renamed or moved.\n\n**Impact**\n- **Files:** `fastapi/dependencies/utils.py` (three call sites plus the definition) and `fastapi/routing.py` (the import and one call).\n- **Functions that call it directly:**\n  - `get_dependant` (recursive)\n  - `get_parameterless_sub_dependant`\n  - `solve_dependencies`\n  - `_build_dependant_with_parameterless_dependencies`\n- **Shielded call:** `routing.py:914` passes only `path`, `call` and `scope`. A change to `name`, `own_oauth_scopes`, `parent_oauth_scopes` or `use_cache` would not touch it. A change to `path`, `call` or `scope` would.\n- **Transitive callers:** I did not trace callers of those four functions, so this list covers direct callers only.\n\nI edited no files. This was a text search of `fastapi/**/*.py`, so any dynamic or aliased references would not show up."
+}

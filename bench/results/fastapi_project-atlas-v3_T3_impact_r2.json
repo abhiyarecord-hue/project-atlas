@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 7,
+ "total_cost_usd": 0.0749591,
+ "usage": {
+  "input_tokens": 10,
+  "cache_creation_input_tokens": 9515,
+  "cache_read_input_tokens": 165391,
+  "output_tokens": 2034,
+  "output_tokens_details": {
+   "thinking_tokens": 93
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 9515,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 10,
+   "outputTokens": 2034,
+   "cacheReadInputTokens": 165391,
+   "cacheCreationInputTokens": 9515,
+   "webSearchRequests": 0,
+   "costUSD": 0.0749591,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 93,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 9515,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 74775,
+ "result": "If the signature of `get_dependant` changed, one definition and four call sites in `fastapi/` would be affected, spread across two files. I searched all of `fastapi/` and found no other references. Nothing was edited.\n\n**Definition**\n- `fastapi/dependencies/utils.py:300`: `get_dependant(*, path, call, name=None, own_oauth_scopes=None, parent_oauth_scopes=None, use_cache=True, scope=None) -> Dependant`. All parameters are keyword-only.\n\n**Call sites**\n\n| Location | Enclosing function | Call |\n|---|---|---|\n| `fastapi/dependencies/utils.py:151` | `get_parameterless_sub_dependant` (defined at line 144) | `return get_dependant(` … |\n| `fastapi/dependencies/utils.py:350` | `get_dependant` itself (recursive call for each sub-dependency) | `sub_dependant = get_dependant(` … |\n| `fastapi/dependencies/utils.py:689` | `solve_dependencies` (defined at line 643) | `use_sub_dependant = get_dependant(` … |\n| `fastapi/routing.py:914` | `_build_dependant_with_parameterless_dependencies` (defined at line 908) | `get_dependant(path=path, call=call, scope=\"function\")` |\n\n`fastapi/routing.py:64` only imports the name and doesn't call it.\n\n**What would be affected**\n- **Direct callers:** the four functions in the table, including `get_dependant` through its recursion. Any renamed, removed or newly required parameter would need updating at the call sites above.\n- **Indirect callers:**\n  - `get_parameterless_sub_dependant` and `_build_dependant_with_parameterless_dependencies` wrap it.\n  - `solve_dependencies` is the request-time resolver and would be affected indirectly, because it calls `get_dependant` for sub-dependencies at line 689.\n- **Files:** `fastapi/dependencies/utils.py` (definition and three call sites) and `fastapi/routing.py` (one call site and the import).\n- **Outside `fastapi/`:** the `fastapi/` package never imports `get_dependant` from anywhere else. Tests, docs or user code that import it from `fastapi.dependencies.utils` would also break, but I didn't search those."
+}

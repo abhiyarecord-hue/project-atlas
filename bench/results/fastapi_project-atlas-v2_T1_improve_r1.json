@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 5,
+ "total_cost_usd": 0.0875342,
+ "usage": {
+  "input_tokens": 8,
+  "cache_creation_input_tokens": 12186,
+  "cache_read_input_tokens": 135142,
+  "output_tokens": 2526,
+  "output_tokens_details": {
+   "thinking_tokens": 110
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 12186,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 8,
+   "outputTokens": 2526,
+   "cacheReadInputTokens": 135142,
+   "cacheCreationInputTokens": 12186,
+   "webSearchRequests": 0,
+   "costUSD": 0.0875342,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 110,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 12186,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 52860,
+ "result": "I read `fastapi/routing.py` (the main package is FastAPI), focusing on lines 283–520. I didn't edit anything. These are the three improvements I'd make.\n\n## 1. Key the endpoint-context cache on the function, not `id(func)`\n\n**Problem** (`fastapi/routing.py:283-306`): `_endpoint_context_cache` is a plain `dict[int, EndpointContext]` keyed by `id(func)`.\n- Once a function is garbage-collected, Python can reuse its `id` for a different function. That function would then get the old function's file, line and name in its error messages.\n- The dict is never evicted, so apps that create endpoints dynamically (tests, plugin loaders) leak entries.\n- The returned `ctx` dict is shared. The request handler later does `endpoint_ctx[\"path\"] = ...` on it (line 448), so one route's path can be written into the cached context that other callers read.\n\n**Sketch:**\n```python\nimport weakref\n\n_endpoint_context_cache: \"weakref.WeakKeyDictionary[Any, EndpointContext]\" = (\n    weakref.WeakKeyDictionary()\n)\n\ndef _extract_endpoint_context(func: Any) -> EndpointContext:\n    try:\n        cached = _endpoint_context_cache.get(func)\n    except TypeError:  # not weak-referenceable (e.g. some callables)\n        cached = None\n    if cached is None:\n        cached = _compute_endpoint_context(func)  # existing try/except body\n        try:\n            _endpoint_context_cache[func] = cached\n        except TypeError:\n            pass\n    return cached.copy()  # callers mutate \"path\"; don't share state\n```\n\n## 2. Split the 375-line `get_request_handler.app` closure into testable steps\n\n**Problem** (`fastapi/routing.py:428-802`): the inner `app` closure does telemetry, body parsing, JSON-error mapping, dependency solving, endpoint execution and response building in one function. The body-parsing block (lines 450-499) alone has five levels of nesting. Because it's a closure, you can't unit-test or profile it on its own. The code already splits out `run_endpoint_function` for that reason, per its comment.\n\n**Sketch:** pull the body logic into a module-level helper and call it from `app`:\n```python\ndef _is_json_content_type(value: str) -> bool:\n    msg = email.message.Message()\n    msg[\"content-type\"] = value\n    return msg.get_content_maintype() == \"application\" and (\n        (sub := msg.get_content_subtype()) == \"json\" or sub.endswith(\"+json\")\n    )\n\nasync def _read_request_body(\n    request: Request, *, is_form: bool, strict: bool, file_stack: AsyncExitStack\n) -> Any:\n    if is_form:\n        form = await request.form()\n        file_stack.push_async_callback(form.close)\n        return form\n    raw = await request.body()\n    if not raw:\n        return Undefined\n    ct = request.headers.get(\"content-type\")\n    if (not ct and not strict) or (ct and _is_json_content_type(ct)):\n        return await request.json()\n    return raw\n```\n`app` then wraps this in the existing `try/except json.JSONDecodeError` and keeps the error mapping. That mapping could also move into a small `_json_decode_error(e, endpoint_ctx)` helper. Behavior stays the same, but each step can be unit-tested.\n\n## 3. Cheaper `_normalize_non_finite_floats` and a single status-code decision\n\n**Problem A** (`fastapi/routing.py:309-317`): the function rebuilds every dict and list on each call, even when the data has no NaN or inf. That's an allocation-heavy copy of the whole response payload on a hot path. It also ignores tuples and nested containers other than `dict` and `list`, and it recurses without a depth guard.\n\n**Problem B** (`fastapi/routing.py:379-394`): `_build_response_args` sets `status_code` in two overlapping steps. The second `if` on line 392 silently overrides the first. A status code explicitly set by the route is therefore overridden whenever the injected `Response` has one. That may be intended, but the code doesn't say so.\n\n**Sketch:**\n```python\ndef _normalize_non_finite_floats(data: Any) -> Any:\n    if isinstance(data, float):\n        return data if math.isfinite(data) else None\n    if isinstance(data, dict):\n        new = {k: _normalize_non_finite_floats(v) for k, v in data.items()}\n        return data if all(new[k] is data[k] for k in data) else new  # reuse if unchanged\n    if isinstance(data, (list, tuple)):\n        new_items = [_normalize_non_finite_floats(v) for v in data]\n        if all(a is b for a, b in zip(new_items, data)):\n            return data\n        return new_items\n    return data\n```\n```python\ndef _build_response_args(*, status_code, solved_result):\n    # Precedence: Response set by the endpoint > route status_code > response-class default\n    resolved = (\n        solved_result.response.status_code\n        or status_code\n        or None\n    )\n    args = {\"background\": solved_result.background_tasks}\n    if resolved is not None:\n        args[\"status_code\"] = resolved\n    return args\n```\nThis is the same logic as today, written with the precedence stated. The comparison still allocates the new containers, so an in-place scan that only copies on the first non-finite float would be cheaper. For that version, add a quick `any(...)` pre-check, or skip the walk when the serializer already guarantees finite values.\n\nNext steps, if you want them: I'd start with #1, since it's a small change and the only one with a possible correctness bug. For #2, add tests around the extracted body helper before moving any code."
+}

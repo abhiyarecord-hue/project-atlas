@@ -34,7 +34,7 @@ Cost falls less than tokens because output tokens and cache writes are roughly t
 
 On a smaller repo (sindresorhus/ky), v2 used 29% fewer tokens than plain Claude Code and also beat token-savior.
 
-Only 2 runs per setting, so differences under about 10% could be noise. The harness is in `bench/run_ab.py`. If you run it on your own repos, please open an issue with your numbers.
+Only 2 runs per setting, so differences under about 10% could be noise. The harness is in `bench/run_ab.py`, and the raw per-run results (usage, cost, turns, answers) are in `bench/results/`. If you run it on your own repos, please open an issue with your numbers.
 
 ### What didn't work
 

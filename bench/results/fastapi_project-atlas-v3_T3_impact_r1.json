@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 6,
+ "total_cost_usd": 0.0671659,
+ "usage": {
+  "input_tokens": 8,
+  "cache_creation_input_tokens": 9634,
+  "cache_read_input_tokens": 129139,
+  "output_tokens": 1570,
+  "output_tokens_details": {
+   "thinking_tokens": 40
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 9634,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 8,
+   "outputTokens": 1570,
+   "cacheReadInputTokens": 129139,
+   "cacheCreationInputTokens": 9634,
+   "webSearchRequests": 0,
+   "costUSD": 0.0671659,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 40,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 9634,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 54822,
+ "result": "If the signature of `get_dependant` changed, one definition and four call sites in the `fastapi/` source would be affected. The call sites are in two files.\n\n**Definition**\n- `fastapi/dependencies/utils.py:300` is `get_dependant(*, path, call, name=None, own_oauth_scopes=None, parent_oauth_scopes=None, use_cache=True, scope=None) -> Dependant`. All its parameters are keyword-only.\n\n**Call sites**\n1. `fastapi/dependencies/utils.py:151` is inside `get_parameterless_sub_dependant` (defined at line 144).\n2. `fastapi/dependencies/utils.py:350` is a recursive call inside `get_dependant` itself. It builds `sub_dependant` for each `Depends` parameter.\n3. `fastapi/dependencies/utils.py:689` is inside `solve_dependencies` (defined at line 643). It builds `use_sub_dependant`.\n4. `fastapi/routing.py:914` is inside `_build_dependant_with_parameterless_dependencies` (defined at line 908). It calls `get_dependant(path=path, call=call, scope=\"function\")`.\n\n`fastapi/routing.py:64` imports `get_dependant`, so it would need updating if the function were renamed or moved. The signature itself would not change that line.\n\n**Indirect impact**\n- Functions that call the affected ones would be affected if the return value or behaviour changed.\n- `get_parameterless_sub_dependant` is called from other places, as is `_build_dependant_with_parameterless_dependencies`. I didn't trace those callers.\n- `solve_dependencies` is called from `fastapi/routing.py`. I didn't trace that either.\n\nI only listed direct references, which I got from the atlas `refs` lookup. I confirmed the enclosing functions with a grep for definitions. I did not edit any files."
+}

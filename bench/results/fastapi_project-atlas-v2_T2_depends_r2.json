@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 8,
+ "total_cost_usd": 0.08912439999999999,
+ "usage": {
+  "input_tokens": 8,
+  "cache_creation_input_tokens": 11804,
+  "cache_read_input_tokens": 137924,
+  "output_tokens": 2810,
+  "output_tokens_details": {
+   "thinking_tokens": 0
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 11804,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 8,
+   "outputTokens": 2810,
+   "cacheReadInputTokens": 137924,
+   "cacheCreationInputTokens": 11804,
+   "webSearchRequests": 0,
+   "costUSD": 0.08912439999999999,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 0,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 11804,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 44542,
+ "result": "Everything below is from the code in this repo. I didn't edit any files.\n\n## 1. Building the dependency tree (at route-registration time)\n\n- **The marker.** `Depends` is a frozen dataclass with `dependency`, `use_cache=True` and `scope`, at `fastapi/params.py:790-794`. `Security` subclasses it and adds `scopes` (`params.py:797-799`).\n- **The node type.** Each node is a `Dependant` dataclass (`fastapi/dependencies/models.py:31-51`). It holds the param lists (`path_params`, `query_params`, `header_params`, `cookie_params`, `body_params`). It holds a `dependencies: list[Dependant]` for children. It also holds the `call`, the `name` (the parameter name it will be injected as), `use_cache` and `scope`.\n- **Recursive construction.** `get_dependant()` (`fastapi/dependencies/utils.py:300-375`) does the work:\n  - It creates the `Dependant` for `call` (`:310-318`).\n  - It reads the callable's signature with `get_typed_signature(call)` (`:321-322`).\n  - It runs `analyze_param()` on each parameter (`:323-329`).\n  - If `param_details.depends` is set, the parameter is a sub-dependency (`:330`). `get_dependant` calls itself on `depends.dependency`, passing `name=param_name` and `use_cache=depends.use_cache` (`:350-358`). The child is appended to `dependant.dependencies` (`:359`).\n  - Otherwise the parameter is a special type such as `Request`, `Response` or `BackgroundTasks` (`:361-369`). If not, it becomes a body field (`:371-372`) or a path/query/header/cookie field (`:374`).\n- **A scope check happens at build time.** A generator dependency with request scope can't depend on a `\"function\"`-scoped one, and this raises `DependencyScopeError` (`utils.py:332-345`).\n- **Decorator and router dependencies.** Dependencies passed as `dependencies=[Depends(...)]` have no parameter name. `get_parameterless_sub_dependant()` builds them (`utils.py:144-156`). `_build_dependant_with_parameterless_dependencies` inserts them at the front of the endpoint's `dependencies` (`fastapi/routing.py:914-919`). The endpoint itself is built with `scope=\"function\"` (`routing.py:914`).\n\n## 2. Solving sub-dependencies (at request time)\n\n`solve_dependencies()` (`utils.py:643-791`) is the entry point and calls itself recursively:\n\n1. It pulls the two `AsyncExitStack`s out of the request scope (`:658-665`). One is request-scoped and one is function-scoped. It creates the shared `values`, `errors` and `dependency_cache` containers (`:666-675`).\n2. It loops over `dependant.dependencies` in order (`:676`).\n3. **Overrides.** If `dependency_overrides` is set, the call is swapped for the override. It then rebuilds a fresh `Dependant` for it with `get_dependant` (`:680-695`).\n4. **Depth-first recursion.** It solves the child's own parameters first by calling `solve_dependencies` on the child with the same `dependency_cache` (`:697-708`). Errors from the child are collected and the loop continues (`:710-712`).\n5. **Invocation.** It runs the child with the values it just solved (`:719-733`):\n   - Generator and async-generator callables go through `_solve_generator`. They are registered on the request exit stack, or on the function stack if `scope == \"function\"` (`:719-729`). That is how teardown after `yield` works.\n   - Coroutine callables are awaited (`:730-731`).\n   - Everything else runs in a threadpool (`:732-733`).\n6. **Injection.** The result is stored in `values[sub_dependant.name]` (`:734-735`). The parent function is later called with those values.\n7. **The node's own parameters.** Path, query, header and cookie values are validated and merged into `values` (`:738-757`). Then the body (`:758-768`). Then the special injections: `Request`, `WebSocket`, `BackgroundTasks`, `Response` and `SecurityScopes` (`:769-784`).\n8. It returns a `SolvedDependency` with `values` and `errors` (`:785-791`).\n\n## 3. Per-request caching and how to disable it\n\n- **Lifetime.** `dependency_cache` is a plain dict created once per top-level solve (`utils.py:672-673`). The same dict is passed into every recursive call (`:704`). It therefore lives for one request and is shared across the whole tree.\n- **Key.** `_get_cache_key()` (`fastapi/dependencies/models.py:82-96`) returns the tuple `(dependant.call, sorted OAuth scopes (only if the dependant uses scopes), computed scope)`. Two `Depends(get_db)` in different places share one entry. Two uses of the same security scheme with different scopes do not.\n- **Lookup.** `if sub_dependant.use_cache and sub_dependant_cache_key in dependency_cache: solved = dependency_cache[...]` (`utils.py:717-718`). On a hit, the call and generator branches (`:719-733`) are skipped. The cached value is reused.\n- **Write.** After a miss, the result is stored with `dependency_cache[key] = solved` (`:736-737`).\n- **Disabling it.** Use `Depends(dep, use_cache=False)`. The flag is `params.py:793`. It is copied onto the child `Dependant` (`utils.py:356`, then `models.py:49`). It is then checked at `utils.py:717`, so that usage always calls the function again.\n- **A caveat visible in the code.** Solving the child's own sub-dependencies (`:697`) happens before the cache check (`:717`). A cache hit therefore skips calling the dependency but not re-walking its sub-tree. The sub-tree's own entries are cached, so nothing is called twice.\n- **Another nuance.** The write at `:736-737` doesn't check `use_cache`. A `use_cache=False` result still gets stored, but if it was already cached the old value stays. Other usages that keep `use_cache=True` can then hit it. This is my reading of the code and I didn't run it."
+}

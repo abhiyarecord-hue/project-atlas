@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 3,
+ "total_cost_usd": 0.0788722,
+ "usage": {
+  "input_tokens": 6,
+  "cache_creation_input_tokens": 10605,
+  "cache_read_input_tokens": 98202,
+  "output_tokens": 2662,
+  "output_tokens_details": {
+   "thinking_tokens": 0
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 10605,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 6,
+   "outputTokens": 2662,
+   "cacheReadInputTokens": 98202,
+   "cacheCreationInputTokens": 10605,
+   "webSearchRequests": 0,
+   "costUSD": 0.0788722,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 0,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 10605,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 44345,
+ "result": "# How FastAPI resolves `Depends()`\n\nI made no edits.\n\n## 1. Declaring a dependency\n\n- `Depends(...)` in `fastapi/param_functions.py:2391-2477` only returns a marker object, `params.Depends(dependency=..., use_cache=..., scope=...)` (`param_functions.py:2477`).\n- The marker is a frozen dataclass with three fields: `dependency`, `use_cache=True` and `scope` (`fastapi/params.py:790-794`).\n- Nothing is called at declaration time.\n\n## 2. Building the dependency tree from signatures (at route-definition time)\n\n- Each node is a `Dependant` dataclass (`fastapi/dependencies/models.py:31-51`). It holds:\n  - parameter lists for path, query, header, cookie and body (`models.py:33-37`);\n  - child nodes in `dependencies` (`models.py:38`);\n  - `call`, `name`, `use_cache` and `scope` (`models.py:39-51`).\n- `get_dependant` (`fastapi/dependencies/utils.py:300-375`) builds the tree recursively.\n  - It reads the callable's signature with `get_typed_signature(call)` (`utils.py:321`) and loops over every parameter (`utils.py:323`).\n  - Each parameter goes through `analyze_param` (`utils.py:324-329`).\n  - If the parameter carries a `Depends`, `get_dependant` recurses on `param_details.depends.dependency` (`utils.py:350-358`). The child gets:\n    - the parameter name (`name=param_name`);\n    - the parent's accumulated OAuth scopes (`parent_oauth_scopes`);\n    - the marker's `use_cache` and `scope` values.\n  - The child is appended to `dependant.dependencies` (`utils.py:359`).\n  - A function parameter without `Depends` is handled in the branches below:\n    - special types such as `Request`, `Response`, `BackgroundTasks` and `SecurityScopes` are recorded by `add_non_field_param_to_dependency` (`utils.py:361-369`);\n    - body fields go to `body_params` (`utils.py:371-372`);\n    - other fields go to the path, query, header or cookie lists via `add_param_to_fields` (`utils.py:374`, defined at `utils.py:607-620`).\n- Dependencies declared in the decorator's `dependencies=[...]` list have no parameter to attach to. They are inserted at the front of the root's children by `_build_dependant_with_parameterless_dependencies` (`fastapi/routing.py:908-922`, insert at `routing.py:915-919`). This uses `get_parameterless_sub_dependant` (`utils.py:144-156`).\n- The route's root dependant is created with `scope=\"function\"` (`routing.py:914`).\n- A yield dependency with scope `\"request\"` can't depend on one with scope `\"function\"`. `get_dependant` raises `DependencyScopeError` in that case (`utils.py:332-345`).\n\n## 3. Solving sub-dependencies at request time\n\n- `_FrontendRouteGroup._solve_dependencies` (`routing.py:2287-2324`) opens two `AsyncExitStack`s, one for the request and one for the function. It stores them in the ASGI scope (`routing.py:2302-2305`), then calls `solve_dependencies` (`routing.py:2306`). If there are errors, it raises `RequestValidationError` (`routing.py:2313-2314`).\n- `solve_dependencies` (`utils.py:643-791`) does a depth-first walk of `dependant.dependencies` (`utils.py:676`):\n  1. **Overrides.** If `dependency_overrides` is set, the call is swapped and a fresh `Dependant` is built for the replacement (`utils.py:680-695`).\n  2. **Recurse first.** It solves the sub-dependant's own sub-tree before calling the sub-dependant itself (`utils.py:697-708`). This passes the same `dependency_cache` down (`utils.py:704`). The recursion yields that sub-dependant's keyword arguments in `solved_result.values`.\n  3. **Errors.** Errors are collected and that child is skipped (`utils.py:710-712`).\n  4. **Call it.** How the callable runs depends on its type:\n     - generator or async generator: `_solve_generator` enters it as a context manager on an exit stack (`utils.py:719-729`, `utils.py:623-631`). The stack is the function stack for `scope == \"function\"`, otherwise the request stack (`utils.py:722-724`);\n     - coroutine: it is awaited (`utils.py:730-731`);\n     - plain function: it runs in the threadpool (`utils.py:732-733`).\n  5. **Store.** The result is stored under the parameter name, `values[sub_dependant.name] = solved` (`utils.py:734-735`).\n- After the loop, the node's own path, query, header, cookie and body params are validated (`utils.py:738-768`). Special injections follow (`utils.py:769-784`): `Request`, `WebSocket`, `BackgroundTasks`, `Response` and `SecurityScopes`.\n- It returns a `SolvedDependency` holding the values, errors and the cache (`utils.py:785-791`, class at `utils.py:634-640`).\n\n## 4. Per-request caching and how to disable it\n\n- The cache is a plain dict created once per request at the top-level call (`utils.py:672-673`). It is passed to every recursive call (`utils.py:704`), so it lives only for that request.\n- The key comes from `_get_cache_key` (`models.py:82-96`). It is a tuple of three parts:\n  - the callable itself (`models.py:93`);\n  - the sorted set of OAuth scopes, used only if the dependency uses scopes (`models.py:87-91`);\n  - the computed scope, `\"\"` if none (`models.py:95`).\n- The lookup is at `utils.py:713-718`. If `sub_dependant.use_cache` is true and the key is already in the dict, the stored value is reused and the call is skipped (`utils.py:717-718`).\n- After a call, the result is stored with `if sub_dependant_cache_key not in dependency_cache: dependency_cache[key] = solved` (`utils.py:736-737`).\n- To disable the cache for a dependency, write `Depends(dep, use_cache=False)`.\n  - The docstring is at `param_functions.py:2407-2423`. It says that setting `use_cache` to `False` makes the dependency be called again each time it is declared in the same request.\n  - The flag flows from `params.Depends.use_cache` (`params.py:793`) into `get_dependant(use_cache=...)` (`utils.py:356`), then into `Dependant.use_cache` (`utils.py:314`, `models.py:49`). It is checked at `utils.py:717`.\n- With `use_cache=False`, the cache check at `utils.py:717` fails, so the dependency is called again. The result is still written to the cache if the key isn't already there (`utils.py:736`). It never overwrites an existing entry, and other declarations that have `use_cache=True` can still read that stored value."
+}

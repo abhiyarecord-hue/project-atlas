@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 5,
+ "total_cost_usd": 0.060869000000000006,
+ "usage": {
+  "input_tokens": 8,
+  "cache_creation_input_tokens": 7607,
+  "cache_read_input_tokens": 142350,
+  "output_tokens": 1619,
+  "output_tokens_details": {
+   "thinking_tokens": 160
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 7607,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 8,
+   "outputTokens": 1619,
+   "cacheReadInputTokens": 142350,
+   "cacheCreationInputTokens": 7607,
+   "webSearchRequests": 0,
+   "costUSD": 0.060869000000000006,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 160,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 7607,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 20927,
+ "result": "If the signature of `get_dependant` changed, these places in `fastapi/` would be affected.\n\n**Definition**\n- `fastapi/dependencies/utils.py:300` is `get_dependant(*, path, call, name=None, own_oauth_scopes=None, parent_oauth_scopes=None, use_cache=True, scope=None) -> Dependant`. All parameters are keyword-only.\n\n**Call sites**\n\n| Location | Calling function | Arguments passed |\n|---|---|---|\n| `fastapi/dependencies/utils.py:151` | `get_parameterless_sub_dependant` (defined at line 144) | A call at lines 151–155 |\n| `fastapi/dependencies/utils.py:350` | `get_dependant` itself, which recurses for each sub-dependency | A call at line 350 |\n| `fastapi/dependencies/utils.py:689` | `solve_dependencies` (defined at line 643, async), which builds a sub-dependant at request time | A call at line 689 |\n| `fastapi/routing.py:914` | `_build_dependant_with_parameterless_dependencies` (defined at line 908) | `get_dependant(path=path, call=call, scope=\"function\")` |\n\n`fastapi/routing.py:64` only imports the function, so it would break only if the function were renamed or moved.\n\n**Files affected**\n- `fastapi/dependencies/utils.py` has the definition and three call sites, one of which is a recursive call.\n- `fastapi/routing.py` has the import and one call site.\n\nNo other file in the `fastapi/` source references `get_dependant`. I only listed direct call sites. Any caller of `get_parameterless_sub_dependant` or `_build_dependant_with_parameterless_dependencies` would be affected only if the change also altered their own signatures or return values. I didn't trace those. I didn't edit any files."
+}

@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 4,
+ "total_cost_usd": 0.055427000000000004,
+ "usage": {
+  "input_tokens": 4,
+  "cache_creation_input_tokens": 8158,
+  "cache_read_input_tokens": 65070,
+  "output_tokens": 1628,
+  "output_tokens_details": {
+   "thinking_tokens": 108
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 8158,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 4,
+   "outputTokens": 1628,
+   "cacheReadInputTokens": 65070,
+   "cacheCreationInputTokens": 8158,
+   "webSearchRequests": 0,
+   "costUSD": 0.055427000000000004,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 108,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 8158,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 41940,
+ "result": "These three proposals come from the `fastapi/` package. I read `fastapi/utils.py`, `fastapi/dependencies/utils.py` (`_read_file_bytes`) and `fastapi/security/oauth2.py`. I haven't run any of the sketches, and I edited no files.\n\n## 1. Make `get_path_param_names` handle paths more strictly (`fastapi/utils.py:43`)\n\n`re.findall(\"{(.*?)}\", path)` also matches Starlette's convertor syntax. For `/files/{file_path:path}` it returns `file_path:path` instead of `file_path`. The caller then has to strip the suffix, or the name never matches a declared parameter. A precompiled regex that captures only the name fixes this.\n\n```python\n_PATH_PARAM_RE = re.compile(r\"{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?}\")\n\ndef get_path_param_names(path: str) -> set[str]:\n    return set(_PATH_PARAM_RE.findall(path))\n```\n\nI haven't checked whether callers already strip the `:convertor` suffix. If they do, the benefit is mainly the precompiled regex and a single place that defines what a valid name looks like.\n\n## 2. Read uploaded files without a possible memory spike (`fastapi/dependencies/utils.py:1090`)\n\n`_read_file_bytes` calls `await file.read()` with no limit. A large upload annotated as `bytes` is loaded fully into memory. Spooled temp files spill to disk, but this call pulls everything back into RAM. A configurable ceiling would let apps fail fast with a 413 error.\n\n```python\nasync def _read_file_bytes(file: UploadFile, max_bytes: int | None = None) -> bytes:\n    position = file.file.tell()\n    try:\n        data = await file.read() if max_bytes is None else await file.read(max_bytes + 1)\n        if max_bytes is not None and len(data) > max_bytes:\n            raise HTTPException(status_code=413, detail=\"Uploaded file too large\")\n        return data\n    finally:\n        await file.seek(position)\n```\n\n`max_bytes` could come from a new optional `File(max_size=...)` parameter. Left unset, behavior stays the same.\n\n## 3. Remove the duplicated bearer-token parsing in the security classes (`fastapi/security/oauth2.py:642`)\n\n`OAuth2AuthorizationCodeBearer.__call__` and the other bearer-style classes each repeat the same steps. They read the `Authorization` header, split it, check for `bearer`, then either raise or return `None`. The `# pragma: nocover` on the `return None` branch suggests that path is also untested here. One shared helper on a base class would make the behavior consistent and testable once.\n\n```python\nclass _BearerMixin:\n    auto_error: bool\n\n    def _extract_bearer(self, request: HTTPConnection) -> str | None:\n        authorization = request.headers.get(\"Authorization\")\n        scheme, param = get_authorization_scheme_param(authorization)\n        if not authorization or scheme.lower() != \"bearer\":\n            if self.auto_error:\n                raise self.make_not_authenticated_error()  # type: ignore[attr-defined]\n            return None\n        return param\n\nclass OAuth2AuthorizationCodeBearer(_BearerMixin, OAuth2):\n    async def __call__(self, request: HTTPConnection) -> str | None:\n        return self._extract_bearer(request)\n```\n\nThen add a test for the `auto_error=False` path and drop the `nocover` pragma.\n\nI'd start with #3. It's the lowest risk and also adds test coverage. #2 changes the public API, so it needs a design decision first."
+}

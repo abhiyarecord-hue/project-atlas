@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 3,
+ "total_cost_usd": 0.0666493,
+ "usage": {
+  "input_tokens": 6,
+  "cache_creation_input_tokens": 8796,
+  "cache_read_input_tokens": 95733,
+  "output_tokens": 2188,
+  "output_tokens_details": {
+   "thinking_tokens": 544
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 8796,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 6,
+   "outputTokens": 2188,
+   "cacheReadInputTokens": 95733,
+   "cacheCreationInputTokens": 8796,
+   "webSearchRequests": 0,
+   "costUSD": 0.0666493,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 544,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 8796,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 72285,
+ "result": "I read `fastapi/routing.py` (the request handler), `fastapi/exceptions.py`, `fastapi/exception_handlers.py` and `fastapi/dependencies/utils.py` (the param-to-args functions). I haven't read the rest of the package, so these three come from those files only. I edited nothing.\n\n## 1. Compute endpoint context once, not on every request\n**Where:** `fastapi/routing.py:439-448`\n\n`app()` calls `_extract_endpoint_context(dependant.call)` on every request. That inspects the function for its file and line, but the result never changes for a given route. `_serialize_data` and the SSE helpers are also redefined inside the request path each time.\n\n```python\ndef get_request_handler(...):\n    base_ctx = (\n        _extract_endpoint_context(dependant.call) if dependant.call else EndpointContext()\n    )\n\n    async def app(request: Request) -> Response:\n        endpoint_ctx = EndpointContext(**base_ctx)   # cheap copy\n        if dependant.path:\n            mount = request.scope.get(\"root_path\", \"\").rstrip(\"/\")\n            endpoint_ctx[\"path\"] = f\"{request.method} {mount}{dependant.path}\"\n```\n\nOnly the `path` key depends on the request, because of `root_path` and the method. The rest can be computed once at route setup.\n\n## 2. Make the body parser a helper and stop re-parsing the Content-Type on every call\n**Where:** `fastapi/routing.py:450-499`\n\nTwo problems here:\n- The body-reading block is about 50 lines inline in a closure of roughly 370 lines. That makes it hard to test.\n- It builds an `email.message.Message` for every request with a body, just to read the media type.\n- The catch-all `except Exception` turns any failure into a bare 400 and discards the cause. `from e` keeps it only in the exception chain.\n\n```python\n@lru_cache(maxsize=256)\ndef _is_json_content_type(value: str) -> bool:\n    msg = email.message.Message()\n    msg[\"content-type\"] = value\n    return msg.get_content_maintype() == \"application\" and (\n        (sub := msg.get_content_subtype()) == \"json\" or sub.endswith(\"+json\")\n    )\n\nasync def _read_body(request, *, is_form, strict) -> Any:\n    if is_form:\n        return await request.form()\n    raw = await request.body()\n    if not raw:\n        return Undefined\n    ct = request.headers.get(\"content-type\")\n    if (ct and _is_json_content_type(ct)) or (not ct and not strict):\n        return await request.json()\n    return raw\n```\n\nThen `app()` just wraps `_read_body` in the existing `try/except`. Add `logger.debug(\"body parse failed\", exc_info=True)` to the generic branch.\n\n## 3. The WebSocket validation handler passes a list as the close reason\n**Where:** `fastapi/exception_handlers.py:29-34`\n\n`websocket.close(reason=jsonable_encoder(exc.errors()))` hands over a list of dicts. Starlette's `reason` is meant to be a `str`. The WebSocket protocol also limits a close frame's control payload to 125 bytes, and the reason has to fit in that along with the 2-byte code. A normal Pydantic error list will exceed that, so the close can fail or the reason can be mangled.\n\n```python\nimport json\n\ndef _ws_reason(errors, limit: int = 123) -> str:\n    text = json.dumps(jsonable_encoder(errors), separators=(\",\", \":\"))\n    return text.encode()[:limit].decode(errors=\"ignore\")  # never split a UTF-8 char\n\nasync def websocket_request_validation_exception_handler(websocket, exc):\n    await websocket.close(code=WS_1008_POLICY_VIOLATION, reason=_ws_reason(exc.errors()))\n```\n\nA better version would summarize the errors, for example `\"2 validation errors: query.q, header.x\"`, so the truncated text is still useful. I'd check how Starlette encodes `reason` before relying on the exact byte limit."
+}

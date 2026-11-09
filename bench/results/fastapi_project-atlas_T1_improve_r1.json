@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 3,
+ "total_cost_usd": 0.0729645,
+ "usage": {
+  "input_tokens": 4,
+  "cache_creation_input_tokens": 11588,
+  "cache_read_input_tokens": 59945,
+  "output_tokens": 2061,
+  "output_tokens_details": {
+   "thinking_tokens": 579
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 11588,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 4,
+   "outputTokens": 2061,
+   "cacheReadInputTokens": 59945,
+   "cacheCreationInputTokens": 11588,
+   "webSearchRequests": 0,
+   "costUSD": 0.0729645,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 579,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 11588,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 36031,
+ "result": "I read only part of the main package (`fastapi/dependencies/utils.py`, `fastapi/openapi/utils.py` and the `request_response` function in `fastapi/routing.py`). I haven't run any of this, so treat the behavioural claims as things to verify. I changed no files.\n\n## 1. Stop rebuilding the `Dependant` for overridden dependencies on every request\n**Where:** `fastapi/dependencies/utils.py:680-695`, in `solve_dependencies`.\n\nWhen `dependency_overrides` is non-empty, each request calls `get_dependant(...)` for every overridden sub-dependency. That function inspects signatures and builds the dependency tree, which is the expensive step the framework normally does once at route setup. Overrides are mostly used in tests, but the cost is paid on every request while they're active.\n\n```python\n# memoize per (override target, original sub_dependant identity)\n_override_cache: dict[tuple[int, Callable], Dependant] = {}   # or lru_cache keyed on ids\n\ndef _resolve_override(sub_dependant, provider, parent_scopes):\n    call = provider.dependency_overrides.get(sub_dependant.call, sub_dependant.call)\n    if call is sub_dependant.call:\n        return sub_dependant\n    key = (id(sub_dependant), call)\n    if (d := _override_cache.get(key)) is None:\n        d = _override_cache[key] = get_dependant(\n            path=sub_dependant.path, call=call, name=sub_dependant.name,\n            parent_oauth_scopes=parent_scopes, scope=sub_dependant.scope)\n    return d\n```\n\nStore the cache on the app or provider so that clearing `dependency_overrides` also clears it. As written, a module-level dict could return stale entries.\n\n## 2. Use a set for `visited` in OpenAPI dependency traversal\n**Where:** `fastapi/openapi/utils.py:99-129`, in `_get_openapi_dependency_data`.\n\n`visited` is a `list`, so `cache_key in visited` is O(n) and the whole walk is O(n²) in the number of dependants. This runs for every route when the schema is generated. The cost shows up on large apps with deep or shared dependency graphs.\n\nThe keys look hashable, because `solve_dependencies` already uses the same `DependencyCacheKey` as a `dict` key. The fix is one line:\n\n```python\nvisited: set[DependencyCacheKey] = set()\n...\nif cache_key in visited:\n    continue\nvisited.add(cache_key)\n```\n\n## 3. Only store a result in the dependency cache when `use_cache` is true\n**Where:** `fastapi/dependencies/utils.py:736-737`, in `solve_dependencies`.\n\nThe read side respects the flag (`sub_dependant.use_cache and key in dependency_cache`). The write side doesn't:\n\n```python\nif sub_dependant_cache_key not in dependency_cache:\n    dependency_cache[sub_dependant_cache_key] = solved\n```\n\nSo a `Depends(dep, use_cache=False)` result still lands in the cache. A later `Depends(dep)` in the same request, with caching on, would then reuse that value. That looks like a leak of a deliberately uncached value, but I haven't reproduced it. A test would settle it: one endpoint depending on `dep` with `use_cache=False` and then on `dep` normally, with `dep` returning a fresh object each call.\n\n```python\nif sub_dependant.use_cache and sub_dependant_cache_key not in dependency_cache:\n    dependency_cache[sub_dependant_cache_key] = solved\n```\n\nIf the current behaviour is intentional, add a comment explaining why. It's easy to read as a bug."
+}

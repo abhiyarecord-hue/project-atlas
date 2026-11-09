@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 7,
+ "total_cost_usd": 0.055695900000000007,
+ "usage": {
+  "input_tokens": 8,
+  "cache_creation_input_tokens": 5827,
+  "cache_read_input_tokens": 123819,
+  "output_tokens": 1999,
+  "output_tokens_details": {
+   "thinking_tokens": 157
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 5827,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 8,
+   "outputTokens": 1999,
+   "cacheReadInputTokens": 123819,
+   "cacheCreationInputTokens": 5827,
+   "webSearchRequests": 0,
+   "costUSD": 0.055695900000000007,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 157,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 5827,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 22736,
+ "result": "Changing `get_dependant`'s signature affects 5 places in 2 files. All are keyword-argument calls. I found them by searching `fastapi/**/*.py` for `get_dependant`.\n\n**Definition**\n- `fastapi/dependencies/utils.py:300`: `get_dependant(*, path, call, name=None, own_oauth_scopes=None, parent_oauth_scopes=None, use_cache=True, scope=None) -> Dependant`. All parameters are keyword-only.\n\n**Call sites**\n1. `fastapi/dependencies/utils.py:151`, in `get_parameterless_sub_dependant`. It passes `path`, `call`, `scope` and `own_oauth_scopes`.\n2. `fastapi/dependencies/utils.py:350`, inside `get_dependant` itself (recursion for sub-dependencies). It passes `path`, `call`, `name`, `own_oauth_scopes`, `parent_oauth_scopes`, `use_cache` and `scope`, so it uses every parameter.\n3. `fastapi/dependencies/utils.py:689`, in `solve_dependencies`, where it rebuilds a dependant for a dependency override. It passes `path`, `call`, `name`, `parent_oauth_scopes` and `scope`.\n4. `fastapi/routing.py:914`, in `_build_dependant_with_parameterless_dependencies`. It passes `path`, `call` and `scope=\"function\"`.\n\n`fastapi/routing.py:64` is the import of `get_dependant`, so it would also need updating if the function were renamed or moved.\n\n**Indirect impact**\n- `get_parameterless_sub_dependant` (`utils.py:144`) is called from `routing.py:918`. Its own signature would only change if you chose to propagate the change. Callers of `_build_dependant_with_parameterless_dependencies` and `solve_dependencies` are affected only by behavior, not by signature, unless those signatures change too. I did not trace those callers.\n\nI haven't edited any files."
+}

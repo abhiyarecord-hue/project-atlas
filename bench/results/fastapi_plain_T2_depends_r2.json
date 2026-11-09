@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 13,
+ "total_cost_usd": 0.125258,
+ "usage": {
+  "input_tokens": 14,
+  "cache_creation_input_tokens": 14020,
+  "cache_read_input_tokens": 246200,
+  "output_tokens": 4453,
+  "output_tokens_details": {
+   "thinking_tokens": 158
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 14020,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 14,
+   "outputTokens": 4453,
+   "cacheReadInputTokens": 246200,
+   "cacheCreationInputTokens": 14020,
+   "webSearchRequests": 0,
+   "costUSD": 0.125258,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 158,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 14020,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 44271,
+ "result": "All paths below are relative to `fastapi/`. I only read files and edited nothing.\n\n## 1. Building the dependency tree from signatures (done once, at route definition)\n\n- **`Depends()` is only a marker.** `param_functions.py:2477` returns `params.Depends(dependency=..., use_cache=..., scope=...)`. The dataclass is in `params.py`, where `use_cache: bool = True` is at line 793.\n- **The route builds the root `Dependant`.** `routing.py:914` calls `get_dependant(path=path, call=call, scope=\"function\")` on the endpoint function. Router-level and decorator-level `dependencies=[...]` are inserted at the front of `.dependencies` by `get_parameterless_sub_dependant` (`routing.py:915-919`; helper at `dependencies/utils.py:144`). They have no parameter name, so their values are never injected.\n- **The signature is inspected.** `get_dependant` (`dependencies/utils.py:300`) calls `get_typed_signature(call)` at line 321. That function (`utils.py:242-256`) resolves string and forward-ref annotations against the function's `__globals__`.\n- **Each parameter is classified.** The loop at `utils.py:323-374` calls `analyze_param` (`utils.py:409`) for every parameter. That function finds a `Depends` in one of two places:\n  - an `Annotated[..., Depends(...)]` argument (`utils.py:431-451`, `473-474`);\n  - a default value, `x = Depends(...)` (`utils.py:476`). Using both together trips an assert (`utils.py:477-480`).\n- **A `Depends` parameter becomes a child node.** `utils.py:330-359` recursively calls `get_dependant` with `call=param_details.depends.dependency`, `name=param_name`, and `use_cache` and `scope` copied from the marker (lines 350-358). The child is appended to `dependant.dependencies` (line 359). Recursion therefore builds the whole tree.\n- **Other parameters become fields on the node:**\n  - `Request`, `WebSocket` and similar special types are handled by `add_non_field_param_to_dependency` (`utils.py:378`, called at 361).\n  - Body parameters go to `dependant.body_params` (line 372).\n  - Path, query, header and cookie parameters go to their lists via `add_param_to_fields` (line 374).\n- **The node type** is the `Dependant` dataclass (`dependencies/models.py:31-51`). It holds `dependencies`, `name`, `call`, `use_cache` (line 49) and `scope`.\n- **Scope check.** A `\"request\"`-scoped generator dependency cannot depend on a `\"function\"`-scoped one. This raises `DependencyScopeError` at `utils.py:332-345`.\n\n## 2. Solving sub-dependencies at request time\n\n- **Entry point.** The request handler calls `solve_dependencies(request=..., dependant=dependant, ...)` at `routing.py:511`. WebSocket and other handlers call it from `routing.py:830` and `routing.py:2306`.\n- **The function is recursive** (`dependencies/utils.py:643`). For each `sub_dependant` in `dependant.dependencies` (line 676):\n  1. **Overrides.** If `dependency_overrides` is set, the call is swapped and a new `Dependant` is built for the replacement (`utils.py:680-695`).\n  2. **Recursion.** It solves the sub-dependant's own parameters first (`utils.py:697-708`). This makes the order depth-first, with leaves solved first.\n  3. **Errors.** If the child had validation errors, they are collected and the child is not called (`utils.py:710-712`).\n  4. **Execution** (`utils.py:717-733`), unless a cached value is found (see section 3):\n     - generator or async generator: `_solve_generator` on an exit stack, either the request-level or the function-level one depending on `scope` (`utils.py:719-729`);\n     - coroutine function: `await call(**solved_result.values)` (line 731);\n     - plain function: `run_in_threadpool(call, **values)` (line 733).\n  5. **Injection.** The result is stored under the parameter name, `values[sub_dependant.name] = solved` (`utils.py:734-735`).\n- **After the sub-dependencies,** the node's own path, query, header and cookie parameters are validated (`utils.py:738-757`). Then body params are validated (`758-768`), and `Request`, `BackgroundTasks`, `Response` and `SecurityScopes` are injected (`769-784`). The function returns `SolvedDependency(values, errors, ...)` (`utils.py:785`). The route then calls the endpoint with `values` (`routing.py:522` onward).\n\n## 3. Per-request caching\n\n- **The cache is a plain dict created per request.** `solve_dependencies` takes `dependency_cache` (`utils.py:651`) and creates `{}` if it is `None` (lines 672-673). The top-level call doesn't pass one, so each request gets a fresh dict. The same dict is passed down every recursive call (`utils.py:704`), which makes it shared across the whole tree for that request.\n- **The key** comes from `_get_cache_key` (`dependencies/models.py:82-96`). It is the tuple `(dependant.call, scopes_for_cache, computed_scope or \"\")`. OAuth scopes are included only if the dependency uses them (`models.py:87-91`). So the same function used in several places hits the cache, but the same function under different `Security` scopes does not.\n- **Lookup.** `utils.py:713-718` computes the key. If `sub_dependant.use_cache` is true and the key is in `dependency_cache`, the stored value is reused and the dependency is not called again.\n- **Store.** After solving, `utils.py:736-737` writes the result into the dict if the key is not already there.\n\n## 4. Disabling the cache\n\nUse `Depends(dep, use_cache=False)`. The docs for this option are at `param_functions.py:2407-2416`, and `Security` has the same option at `param_functions.py:2515-2524`. The flag is copied onto the child `Dependant` (`utils.py:356`) and checked at `utils.py:717`. With it off, that dependency is re-run on each use within the request.\n\nOne nuance: the store at `utils.py:736` doesn't check `use_cache`. A `use_cache=False` dependency still writes its result into the dict if the key is absent. It never reads from it, so its own behavior is correct. A later `use_cache=True` use of the same callable could pick up that stored value, though."
+}

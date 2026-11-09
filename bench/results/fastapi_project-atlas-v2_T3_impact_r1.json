@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 7,
+ "total_cost_usd": 0.07134549999999999,
+ "usage": {
+  "input_tokens": 10,
+  "cache_creation_input_tokens": 9035,
+  "cache_read_input_tokens": 161755,
+  "output_tokens": 1901,
+  "output_tokens_details": {
+   "thinking_tokens": 63
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 9035,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 10,
+   "outputTokens": 1901,
+   "cacheReadInputTokens": 161755,
+   "cacheCreationInputTokens": 9035,
+   "webSearchRequests": 0,
+   "costUSD": 0.07134549999999999,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 63,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 9035,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 31306,
+ "result": "**Definition**\n\n- `fastapi/dependencies/utils.py:300` is `get_dependant(*, path, call, name=None, own_oauth_scopes=None, parent_oauth_scopes=None, use_cache=True, scope=None) -> Dependant`. Every parameter is keyword-only.\n\n**Call sites in `fastapi/`**\n\nThere are four. The first two are in `fastapi/dependencies/utils.py`, the last in `fastapi/routing.py`.\n\n| Location | Enclosing function | Notes |\n|---|---|---|\n| `fastapi/dependencies/utils.py:151` | `get_parameterless_sub_dependant` (defined at line 144) | Builds a `Dependant` for dependencies that have no parameters. |\n| `fastapi/dependencies/utils.py:350` | `get_dependant` itself (recursive) | Builds the sub-dependant for each `Depends(...)` parameter. |\n| `fastapi/dependencies/utils.py:689` | `solve_dependencies` (defined at line 643) | Builds `use_sub_dependant`, evidently for dependency overrides. |\n| `fastapi/routing.py:914` | `_build_dependant_with_parameterless_dependencies` (defined at line 908) | Calls `get_dependant(path=path, call=call, scope=\"function\")`. |\n\n`fastapi/routing.py:64` imports `get_dependant`. It isn't a call, but it also breaks if the function is renamed or moved.\n\n**Affected functions**\n\n- `get_dependant`, since it is the definition and also calls itself.\n- `get_parameterless_sub_dependant`\n- `solve_dependencies`\n- `_build_dependant_with_parameterless_dependencies`\n\nCallers of these four are affected only if the change alters their own signatures or return types.\n\nI ran a plain text search of `fastapi/` for `get_dependant` and it matched only these locations. The Atlas `refs` query returned the same list. All four call sites use keyword arguments. Adding an optional keyword argument therefore breaks none of them. Renaming or removing `path`, `call`, `name`, `own_oauth_scopes`, `parent_oauth_scopes`, `use_cache` or `scope` would break the call sites that pass it. I didn't open the full argument lists at the 151, 350 and 689 calls, so I haven't confirmed which keywords each one passes. I made no edits."
+}

@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 3,
+ "total_cost_usd": 0.0464025,
+ "usage": {
+  "input_tokens": 6,
+  "cache_creation_input_tokens": 6262,
+  "cache_read_input_tokens": 94525,
+  "output_tokens": 1189,
+  "output_tokens_details": {
+   "thinking_tokens": 21
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 6262,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 6,
+   "outputTokens": 1189,
+   "cacheReadInputTokens": 94525,
+   "cacheCreationInputTokens": 6262,
+   "webSearchRequests": 0,
+   "costUSD": 0.0464025,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 21,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 6262,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 44491,
+ "result": "**Definition**\n\n- `fastapi/dependencies/utils.py:300-309` defines `get_dependant`. Its signature is:\n  - `*, path: str, call: Callable[..., Any]`\n  - `name: str | None = None`\n  - `own_oauth_scopes: list[str] | None = None`\n  - `parent_oauth_scopes: list[str] | None = None`\n  - `use_cache: bool = True`\n  - `scope: Literal[\"function\", \"request\"] | None = None`\n  - It returns `Dependant`.\n\n**Call sites in `fastapi/`**\n\n| Location | Enclosing function | Arguments passed |\n|---|---|---|\n| `fastapi/dependencies/utils.py:151` | `get_parameterless_sub_dependant` (144-156) | `path`, `call`, `scope`, `own_oauth_scopes` |\n| `fastapi/dependencies/utils.py:350` | `get_dependant` itself (recursive, 300-375) | `path`, `call`, `name`, `own_oauth_scopes`, `parent_oauth_scopes`, `use_cache`, `scope` |\n| `fastapi/dependencies/utils.py:689` | `solve_dependencies` (643-791), in the dependency-overrides branch | `path`, `call`, `name`, `parent_oauth_scopes`, `scope` |\n| `fastapi/routing.py:914` | `_build_dependant_with_parameterless_dependencies` (908-918) | `path`, `call`, `scope` |\n\n`fastapi/routing.py:64` also imports `get_dependant`. If the function were renamed or moved, that import would break.\n\n**Functions affected by a signature change**\n\n- `get_dependant`: its own body changes, and the recursive call at line 350 has to match.\n- `get_parameterless_sub_dependant`\n- `solve_dependencies`\n- `_build_dependant_with_parameterless_dependencies`\n\n**Indirect impact**\n\n- `get_parameterless_sub_dependant` is called from `fastapi/routing.py` at line 918, inside the loop in `_build_dependant_with_parameterless_dependencies`. Its own signature would not change unless you chose to pass new arguments through it.\n- Every call site uses keyword arguments, and the signature is keyword-only (`*`). Adding an optional parameter is therefore safe. Renaming, removing or reordering parameters is not safe, and neither is making a parameter required.\n\nI searched only the `fastapi/` source, as you asked. Tests such as `tests/test_dependencies_utils.py` also import from this module, and I didn't check them."
+}

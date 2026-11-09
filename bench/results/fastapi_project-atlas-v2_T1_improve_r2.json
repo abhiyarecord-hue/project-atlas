@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 4,
+ "total_cost_usd": 0.0713123,
+ "usage": {
+  "input_tokens": 6,
+  "cache_creation_input_tokens": 9584,
+  "cache_read_input_tokens": 97543,
+  "output_tokens": 2321,
+  "output_tokens_details": {
+   "thinking_tokens": 212
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 9584,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 6,
+   "outputTokens": 2321,
+   "cacheReadInputTokens": 97543,
+   "cacheCreationInputTokens": 9584,
+   "webSearchRequests": 0,
+   "costUSD": 0.0713123,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 212,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 9584,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 33120,
+ "result": "I read the core of `fastapi/routing.py`, mainly lines 286–560. That covers the endpoint-context cache, response serialization, and the first part of the request handler. I didn't edit any files.\n\n## 1. Key the endpoint-context cache on the function, not `id(func)`\n\n**Where:** `_extract_endpoint_context`, `fastapi/routing.py:286-306`\n\nThe cache is keyed on `id(func)`. Python can reuse an id once a function is garbage-collected, so a dynamically created endpoint (a closure or lambda built per request or per test) can get another function's file, line and name in its error context. The dict also never shrinks. And `ctx` is the cached object itself, so line 448 (`endpoint_ctx[\"path\"] = ...`) mutates the shared cache entry on every request.\n\n```python\n_endpoint_context_cache: \"weakref.WeakKeyDictionary[Any, EndpointContext]\" = (\n    weakref.WeakKeyDictionary()\n)\n\ndef _extract_endpoint_context(func: Any) -> EndpointContext:\n    try:\n        return _endpoint_context_cache[func].copy()   # copy: callers add \"path\"\n    except (KeyError, TypeError):                     # TypeError: not weakref-able\n        pass\n    ctx = _build_ctx(func)                            # existing inspect logic\n    try:\n        _endpoint_context_cache[func] = ctx\n    except TypeError:\n        pass\n    return ctx.copy()\n```\n\nThis ties entries to the function's lifetime and stops the per-request mutation from leaking into the cache.\n\n## 2. Break up the ~375-line `app` closure in `get_request_handler`\n\n**Where:** `get_request_handler.app`, `fastapi/routing.py:428-802`\n\nOne closure handles body parsing, dependency solving, SSE streaming, JSONL streaming and normal responses. It also defines `_serialize_data` inside the request path (line 528), so that function is recreated on every request. Pulling the pieces out makes them testable and profilable on their own. The code already notes that inner functions are hard to profile (line 365).\n\n```python\nasync def _read_body(request, *, body_field, is_body_form, strict, file_stack) -> Any:\n    \"\"\"Returns Undefined | parsed JSON | raw bytes | FormData.\n    Raises RequestValidationError / HTTPException as today.\"\"\"\n    ...\n\ndef _make_stream_serializer(field, endpoint_ctx, opts) -> Callable[[Any], bytes]:\n    \"\"\"Built once at route-definition time, not per request.\"\"\"\n    def serialize(data: Any) -> bytes:\n        ...\n    return serialize\n\n# in get_request_handler:\nserialize_stream_item = _make_stream_serializer(stream_item_field, ..., opts)\n\nasync def app(request: Request) -> Response:\n    ...\n    body = await _read_body(request, body_field=body_field, ...)\n    solved = await _solve(request, dependant, body, ...)\n    if solved.errors:\n        raise RequestValidationError(...)\n    if is_sse_stream:\n        return _sse_response(...)\n    if is_json_stream:\n        return _jsonl_response(...)\n    return await _plain_response(...)\n```\n\nThe error-handling behavior stays the same. The only change is that each mode becomes a small function with its own tests.\n\n## 3. Cheaper content-type check and a complete float normalizer\n\n**Where:** `fastapi/routing.py:461-471` and `fastapi/routing.py:309-317`\n\nTwo small problems:\n\n- **Content-type parsing:** each request with a body builds an `email.message.Message` just to read the main type and subtype.\n- **Non-finite floats:** `_normalize_non_finite_floats` handles only `dict` and `list`. A `NaN` inside a tuple or set is left alone. The `json.dumps` on line 551 then emits invalid JSON (`NaN`) for stream items.\n\n```python\n@functools.lru_cache(maxsize=256)\ndef _is_json_content_type(value: str) -> bool:\n    mime = value.split(\";\", 1)[0].strip().lower()\n    main, _, sub = mime.partition(\"/\")\n    return main == \"application\" and (sub == \"json\" or sub.endswith(\"+json\"))\n\ndef _normalize_non_finite_floats(data: Any) -> Any:\n    if isinstance(data, float):\n        return data if math.isfinite(data) else None\n    if isinstance(data, dict):\n        return {k: _normalize_non_finite_floats(v) for k, v in data.items()}\n    if isinstance(data, (list, tuple, set, frozenset)):\n        return [_normalize_non_finite_floats(v) for v in data]\n    return data\n\n# and in _serialize_data, make the failure explicit rather than emitting NaN:\njson.dumps(normalized, allow_nan=False)\n```\n\nCaching works because a given API sees only a handful of distinct `Content-Type` strings. Setting `allow_nan=False` turns any remaining non-finite float into a clear error instead of invalid JSON.\n\nI only read the sections above, so I haven't checked how these changes interact with `applications.py` or `_compat`. Before applying #1, check whether any caller relies on getting back the shared, mutated dict."
+}

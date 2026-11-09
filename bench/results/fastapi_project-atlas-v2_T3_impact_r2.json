@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 3,
+ "total_cost_usd": 0.0395031,
+ "usage": {
+  "input_tokens": 6,
+  "cache_creation_input_tokens": 4646,
+  "cache_read_input_tokens": 94171,
+  "output_tokens": 1149,
+  "output_tokens_details": {
+   "thinking_tokens": 111
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 4646,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 6,
+   "outputTokens": 1149,
+   "cacheReadInputTokens": 94171,
+   "cacheCreationInputTokens": 4646,
+   "webSearchRequests": 0,
+   "costUSD": 0.0395031,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 111,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 4646,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 33813,
+ "result": "`get_dependant` is defined at `fastapi/dependencies/utils.py:300-375`. Its signature is keyword-only:\n\n```python\nget_dependant(*, path: str, call: Callable[..., Any], name: str | None = None,\n              own_oauth_scopes: list[str] | None = None,\n              parent_oauth_scopes: list[str] | None = None,\n              use_cache: bool = True,\n              scope: Literal[\"function\", \"request\"] | None = None) -> Dependant\n```\n\n**Call sites in `fastapi/`** (from the atlas `refs` index, plus the enclosing function for each site):\n\n| Location | Enclosing function | Notes |\n|---|---|---|\n| `fastapi/routing.py:64` | module imports | Import only, so it breaks if the function is renamed or moved. |\n| `fastapi/routing.py:914` | `_build_dependant_with_parameterless_dependencies` (`routing.py:908`) | Calls `get_dependant(path=path, call=call, scope=\"function\")`. |\n| `fastapi/dependencies/utils.py:151` | `get_parameterless_sub_dependant` (`utils.py:144`) | |\n| `fastapi/dependencies/utils.py:350` | `get_dependant` itself (`utils.py:300-375`) | Recursive call that builds sub-dependants. It sits inside the definition's line range, so I took it as recursion and did not open that line. |\n| `fastapi/dependencies/utils.py:689` | `solve_dependencies` (`utils.py:643`) | Builds `use_sub_dependant`. |\n\nIf the signature changed, these are the places to check:\n- **Direct callers to update:** `_build_dependant_with_parameterless_dependencies`, `get_parameterless_sub_dependant`, `solve_dependencies`, and the recursive call inside `get_dependant`.\n- **Indirect impact:** `routing.py:914` is the only call site outside `utils.py`, so any change in `routing.py` stays in that one helper. Other routing code that calls that helper is only affected if the helper's own signature or return value changes.\n\nI did not edit any files. I did not search tests or docs, as you asked. The `refs` index only matches the symbol name, so a call through an alias or `getattr` would not show up."
+}

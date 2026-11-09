@@ -1,0 +1,40 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": false,
+ "num_turns": 6,
+ "total_cost_usd": 0.06545300000000001,
+ "usage": {
+  "input_tokens": 8,
+  "cache_creation_input_tokens": 7560,
+  "cache_read_input_tokens": 128370,
+  "output_tokens": 2236,
+  "output_tokens_details": {
+   "thinking_tokens": 543
+  },
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 7560,
+   "ephemeral_5m_input_tokens": 0
+  }
+ },
+ "modelUsage": {
+  "claude-sonnet-5-5": {
+   "inputTokens": 8,
+   "outputTokens": 2236,
+   "cacheReadInputTokens": 128370,
+   "cacheCreationInputTokens": 7560,
+   "webSearchRequests": 0,
+   "costUSD": 0.06545300000000001,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 543,
+   "cacheCreationEphemeral5mInputTokens": 0,
+   "cacheCreationEphemeral1hInputTokens": 7560,
+   "canonicalModel": "claude-sonnet-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "duration_ms": 28474,
+ "result": "I read `fastapi/utils.py`, `fastapi/exception_handlers.py` and `fastapi/background.py`, not the whole package. The three proposals come from those files. I didn't run anything or edit any files.\n\n## 1. Make `generate_unique_id` deterministic for multi-method routes\n**Where:** `fastapi/utils.py:95-100`\n\n`list(route.methods)[0]` takes the first item of a `set`. A route registered with `methods=[\"GET\", \"POST\"]` can therefore get a different `operationId` from one process to the next. String hashing is randomized per process, which is what changes the set order. That breaks generated API clients and OpenAPI diffs.\n\n```python\ndef generate_unique_id(route: \"APIRoute\") -> str:\n    assert route.methods\n    method = sorted(route.methods)[0].lower()   # stable choice\n    operation_id = re.sub(r\"\\W\", \"_\", f\"{route.name}{route.path_format}\")\n    return f\"{operation_id}_{method}\"\n```\n\nExisting IDs for multi-method routes may change once, so this should go in release notes.\n\n## 2. Harden `is_body_allowed_for_status_code`\n**Where:** `fastapi/utils.py:26-40`\n\n- `int(status_code)` raises a bare `ValueError` for input like `\"2xx\"` or `\"abc\"`. The OpenAPI patterns are uppercase, but `responses={\"2xx\": ...}` is an easy mistake to make.\n- The set literal is rebuilt on every call.\n\n```python\n_PATTERN_CODES = frozenset({\"default\", \"1XX\", \"2XX\", \"3XX\", \"4XX\", \"5XX\"})\n_NO_BODY_CODES = frozenset({204, 205, 304})\n\ndef is_body_allowed_for_status_code(status_code: int | str | None) -> bool:\n    if status_code is None:\n        return True\n    if isinstance(status_code, str):\n        if status_code.upper() in {c.upper() for c in _PATTERN_CODES}:\n            return True\n        try:\n            status_code = int(status_code)\n        except ValueError:\n            raise ValueError(\n                f\"Invalid status code {status_code!r}: expected an int, \"\n                f\"a numeric string, or one of {sorted(_PATTERN_CODES)}\"\n            ) from None\n    return not (status_code < 200 or status_code in _NO_BODY_CODES)\n```\n\n## 3. Send a string as the WebSocket close reason\n**Where:** `fastapi/exception_handlers.py:29-34`\n\n`jsonable_encoder(exc.errors())` returns a `list` of dicts, but the ASGI close `reason` should be a `str`. Servers may reject it or stringify it with Python `repr`, which gives a non-JSON, unparseable reason. The close frame payload is also capped at 123 bytes of reason, so a long error list can make the close itself fail.\n\n```python\nimport json\n\nasync def websocket_request_validation_exception_handler(\n    websocket: WebSocket, exc: WebSocketRequestValidationError\n) -> None:\n    reason = json.dumps(jsonable_encoder(exc.errors()), separators=(\",\", \":\"))\n    if len(reason.encode()) > 123:               # RFC 6455 close-frame limit\n        reason = reason.encode()[:120].decode(errors=\"ignore\") + \"...\"\n    await websocket.close(code=WS_1008_POLICY_VIOLATION, reason=reason)\n```\n\nBefore changing this, check how the current tests, such as `tests/test_ws_*`, assert on `reason`. The behavior change may need to be opt-in."
+}
