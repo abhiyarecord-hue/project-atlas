@@ -11,7 +11,7 @@ Stdlib only. Usage:  python atlas.py <command> [args]   (run `help`)
 import ast, fnmatch, hashlib, json, os, re, sys, time
 from collections import Counter, defaultdict
 
-VERSION = 1
+VERSION = 2  # bumped: v1 indexes built from CRLF files have wrong/missing symbols and must be rebuilt
 ADIR = ".atlas"
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -335,6 +335,9 @@ def json_extract(text, rel):
     return syms, []
 
 def extract(text, lang, rel):
+    # Offsets are mapped to lines assuming one-character newlines; CRLF input would drift and crash.
+    if "\r" in text:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
     if lang == "py":
         r = py_extract(text)
         if r is not None:
@@ -1053,10 +1056,26 @@ def auto_root(cwd):
                 return "files"
     return None
 
+def _opted_out(cwd, root):
+    """True if `.noatlas` exists in cwd or any folder between it and the index root."""
+    d = os.path.abspath(cwd)
+    stop = os.path.abspath(root) if root else d
+    while True:
+        if os.path.exists(os.path.join(d, ".noatlas")):
+            return True
+        p = os.path.dirname(d)
+        if d == stop or p == d:
+            return False
+        d = p
+
 def cmd_hook(root, args):
+    if os.environ.get("ATLAS_AUTO", "1") == "0":
+        return  # global off switch: applies to already-indexed projects too
     r = find_root(os.getcwd())
     if r and os.path.abspath(r) == os.path.abspath(os.path.expanduser("~")) and os.getcwd() != r:
         r = None  # never let a stray ~/.atlas capture every project
+    if r and _opted_out(os.getcwd(), r):
+        return  # `.noatlas` wins even inside an indexed parent
     if not r:
         if not auto_root(os.getcwd()):
             return  # not a project (home dir, drive root, opted out)
